@@ -4520,7 +4520,6 @@ sub scan_superio {
 
     printf("Probing for Super-I/O at 0x%X/0x%X\n", $addrreg, $datareg);
     $| = 1;
-    exit_superio($addrreg, $datareg);  # ensure clean baseline
 
     # Fast path: read ID without unlocking
     my $raw_id = read_id_no_unlock($addrreg, $datareg);
@@ -4549,6 +4548,8 @@ sub scan_superio {
         $| = 0;
         return $features;  # stays 0; no probing/features collected in fast path
     }
+	
+	exit_superio($addrreg, $datareg);  # ensure clean baseline
 
     # Fallback: invalid ID -> try families with passwords and ns_detect
     foreach my $family (@superio_ids) {
