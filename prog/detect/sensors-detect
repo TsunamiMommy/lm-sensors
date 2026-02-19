@@ -4586,9 +4586,9 @@ sub scan_superio {
     printf("Probing for Super-I/O at 0x%X/0x%X\n", $addrreg, $datareg);
     $| = 1;
 
-    # Fast path: read ID without unlocking
-    # If we get a valid ID, try ITE first since ITE can be reliably identified
-    # without a password on the first read (this is required for gigabyte motherboards).
+    # No Enter: Read ID without unlocking.
+    # If we get a valid ID, try ITE first, since ITE chips need to be identified
+    # without entering configuration mode on the 0x4E/0x4F ports on gigabyte motherboards.
     my $raw_id = read_id_no_unlock($addrreg, $datareg);
     if ($raw_id != 0x0000 && $raw_id != 0xFFFF) {
 		printf("Found chip with ID 0x%04X\n", $raw_id);
