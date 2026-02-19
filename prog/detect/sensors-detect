@@ -4496,63 +4496,100 @@ sub smsc_ns_detect_superio
 	return 1;
 }
 
+sub read_id_no_unlock {
+    my ($addrreg, $datareg) = @_;
+    outb($addrreg, $standard_superio{devidreg});
+    my $hi = inb($datareg);
+    outb($addrreg, $standard_superio{devidreg} + 1);
+    my $lo = inb($datareg);
+    return ($hi << 8) | $lo;
+}
+
+sub id_matches_chip {
+    my ($id, $chip) = @_;
+    return (($chip->{devid} > 0xff &&
+             ($id & ($chip->{devid_mask} || 0xffff)) == $chip->{devid})
+         || ($chip->{devid} <= 0xff &&
+             ($id >> 8) == $chip->{devid}));
+}
+
 # Returns: features supported by the device added, if any
-sub scan_superio
-{
-	my ($addrreg, $datareg) = @_;
-	my ($val, $found);
-	my $features = 0;
+sub scan_superio {
+    my ($addrreg, $datareg) = @_;
+    my $features = 0;
 
-	printf("Probing for Super-I/O at 0x\%x/0x\%x\n", $addrreg, $datareg);
+    printf("Probing for Super-I/O at 0x%X/0x%X\n", $addrreg, $datareg);
+    $| = 1;
+    exit_superio($addrreg, $datareg);  # ensure clean baseline
 
-	$| = 1;
-	# reset state to avoid false positives
-	exit_superio($addrreg, $datareg);
-	foreach my $family (@superio_ids) {
-		printf("\%-60s", "Trying family `$family->{family}'... ");
-		# write the password
-		foreach $val (@{$family->{enter}->{$addrreg}}) {
-			outb($addrreg, $val);
-		}
-		# call the non-standard detection routine first if it exists
-		if (defined($family->{ns_detect}) &&
-		    &{$family->{ns_detect}}($addrreg, $datareg, $family->{ns_chips})) {
-			last;
-		}
+    # Fast path: read ID without unlocking
+    my $raw_id = read_id_no_unlock($addrreg, $datareg);
+    if ($raw_id != 0x0000 && $raw_id != 0xFFFF) {
+        my @matches;
+        for my $family (@superio_ids) {
+            for my $chip (@{ $family->{chips} }) {
+                push @matches, [$family, $chip] if id_matches_chip($raw_id, $chip);
+            }
+        }
 
-		# did it work?
-		outb($addrreg, $standard_superio{devidreg});
-		$val = inb($datareg);
-		outb($addrreg, $standard_superio{devidreg} + 1);
-		$val = ($val << 8) | inb($datareg);
-		if ($val == 0x0000 || $val == 0xffff) {
-			print "No\n";
-			next;
-		}
-		print "Yes\n";
+        if (@matches) {
+            # List family + ID, but do NOT enter/exit or probe
+            # You can deduplicate by family if desired
+            my %seen_family;
+            for my $fc (@matches) {
+                my ($family, $chip) = @$fc;
+                next if $seen_family{$family->{family}}++;
+                printf("Detected %s chip with ID 0x%04X (no config entered)\n",
+                       $family->{family}, $raw_id);
+            }
+        } else {
+            printf("Found unknown chip with ID 0x%04X (no config entered)\n", $raw_id);
+        }
 
-		$found = 0;
-		foreach my $chip (@{$family->{chips}}) {
-			if (($chip->{devid} > 0xff &&
-			     ($val & ($chip->{devid_mask} || 0xffff)) == $chip->{devid})
-			 || ($chip->{devid} <= 0xff &&
-			     ($val >> 8) == $chip->{devid})) {
-				$features |= probe_superio($addrreg, $datareg, $chip);
-				$found++;
-			}
-		}
+        $| = 0;
+        return $features;  # stays 0; no probing/features collected in fast path
+    }
 
-		if (!$found) {
-			printf("Found unknown chip with ID 0x%04x\n", $val);
-			# Guess if a logical device could correspond to sensors
-			guess_superio_ld($addrreg, $datareg, $family->{guess})
-				if defined $family->{guess};
-		}
-		last;
-	}
-	exit_superio($addrreg, $datareg);
-	$| = 0;
-	return $features;
+    # Fallback: invalid ID -> try families with passwords and ns_detect
+    foreach my $family (@superio_ids) {
+        printf("%-60s", "Trying family `$family->{family}'... ");
+
+        if (defined $family->{ns_detect} &&
+            &{$family->{ns_detect}}($addrreg, $datareg, $family->{ns_chips})) {
+            print "Yes\n";
+            last;
+        }
+
+        foreach my $pw (@{ $family->{enter}->{$addrreg} }) {
+            outb($addrreg, $pw);
+        }
+
+        outb($addrreg, $standard_superio{devidreg});
+        my $hi = inb($datareg);
+        outb($addrreg, $standard_superio{devidreg} + 1);
+        my $id = ($hi << 8) | inb($datareg);
+
+        if ($id == 0x0000 || $id == 0xFFFF) { print "No\n"; next; }
+        print "Yes\n";
+
+        my $found = 0;
+        for my $chip (@{ $family->{chips} }) {
+            if (id_matches_chip($id, $chip)) {
+                $features |= probe_superio($addrreg, $datareg, $chip);
+                $found++;
+            }
+        }
+
+        if (!$found) {
+            printf("Found unknown chip with ID 0x%04X\n", $id);
+            guess_superio_ld($addrreg, $datareg, $family->{guess}) if defined $family->{guess};
+        }
+        last;
+    }
+
+    exit_superio($addrreg, $datareg);
+    $| = 0;
+    return $features;
 }
 
 sub scan_cpu
